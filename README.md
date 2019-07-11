@@ -20,11 +20,12 @@ Run:
 
     $ heroku-cloudwatch-drain
 
-## Install on application
+## Install on application (CENTRA)
 
-We have a cloudwatch-drain, look in the ENV for the credentials, add this to your app and change the variables accordingly:
+We have a [cloudwatch-drain](https://dashboard.heroku.com/apps/centra-cloudwatch-drain/settings), look in the ENV for the credentials, add this to your app and change the variables accordingly:
+
 ```
-heroku drains:add https://[user]:[pass]@centra-cloudwatch-drain.herokuapp.com/[name-of-log-group] -a [app-you-want-to-drain]
+heroku drains:add https://[USER]:[PASS]@centra-cloudwatch-drain.herokuapp.com/[name-of-log-group] -a [app-you-want-to-drain]
 ```
 
 ## Configuration
