@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"reflect"
 	"sync"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 
 type txnInput struct {
 	W          http.ResponseWriter
+	Request    *http.Request
 	Config     Config
 	Reply      *internal.ConnectReply
 	Consumer   dataConsumer
@@ -27,38 +27,48 @@ type txn struct {
 	// finished indicates whether or not End() has been called.  After
 	// finished has been set to true, no recording should occur.
 	finished bool
+	queuing  time.Duration
+	start    time.Time
+	name     string // Work in progress name
+	isWeb    bool
+	ignore   bool
+	errors   internal.TxnErrors // Lazily initialized.
+	attrs    *internal.Attributes
 
-	Name   string // Work in progress name
-	ignore bool
+	// Fields relating to tracing and breakdown metrics/segments.
+	tracer internal.Tracer
 
 	// wroteHeader prevents capturing multiple response code errors if the
 	// user erroneously calls WriteHeader multiple times.
 	wroteHeader bool
 
-	internal.TxnData
+	// Fields assigned at completion
+	stop           time.Time
+	duration       time.Duration
+	finalName      string // Full finalized metric name
+	zone           internal.ApdexZone
+	apdexThreshold time.Duration
 }
 
-func newTxn(input txnInput, req *http.Request, name string) *txn {
+func newTxn(input txnInput, name string) *txn {
 	txn := &txn{
 		txnInput: input,
+		start:    time.Now(),
+		name:     name,
+		isWeb:    nil != input.Request,
+		attrs:    internal.NewAttributes(input.attrConfig),
 	}
-	txn.Start = time.Now()
-	txn.Name = name
-	txn.IsWeb = nil != req
-	txn.Attrs = internal.NewAttributes(input.attrConfig)
-	if nil != req {
-		txn.Queuing = internal.QueueDuration(req.Header, txn.Start)
-		internal.RequestAgentAttributes(txn.Attrs, req)
+	if nil != txn.Request {
+		txn.queuing = internal.QueueDuration(input.Request.Header, txn.start)
+		internal.RequestAgentAttributes(txn.attrs, input.Request)
 	}
-	txn.Attrs.Agent.HostDisplayName = txn.Config.HostDisplayName
-	txn.TxnTrace.Enabled = txn.txnTracesEnabled()
-	txn.TxnTrace.SegmentThreshold = txn.Config.TransactionTracer.SegmentThreshold
-	txn.StackTraceThreshold = txn.Config.TransactionTracer.StackTraceThreshold
-	txn.SlowQueriesEnabled = txn.slowQueriesEnabled()
-	txn.SlowQueryThreshold = txn.Config.DatastoreTracer.SlowQuery.Threshold
-	if nil != req && nil != req.URL {
-		txn.CleanURL = internal.SafeURL(req.URL)
-	}
+	txn.attrs.Agent.HostDisplayName = txn.Config.HostDisplayName
+	txn.tracer.Enabled = txn.txnTracesEnabled()
+	txn.tracer.SegmentThreshold = txn.Config.TransactionTracer.SegmentThreshold
+	txn.tracer.StackTraceThreshold = txn.Config.TransactionTracer.StackTraceThreshold
+	txn.tracer.SlowQueriesEnabled = txn.slowQueriesEnabled()
+	txn.tracer.SlowQueryThreshold = txn.Config.DatastoreTracer.SlowQuery.Threshold
+	txn.tracer.InstanceReportingDisabled = !txn.Config.DatastoreTracer.InstanceReporting.Enabled
 
 	return txn
 }
@@ -84,67 +94,106 @@ func (txn *txn) errorEventsEnabled() bool {
 }
 
 func (txn *txn) freezeName() {
-	if txn.ignore || ("" != txn.FinalName) {
+	if txn.ignore || ("" != txn.finalName) {
 		return
 	}
 
-	txn.FinalName = internal.CreateFullTxnName(txn.Name, txn.Reply, txn.IsWeb)
-	if "" == txn.FinalName {
+	txn.finalName = internal.CreateFullTxnName(txn.name, txn.Reply, txn.isWeb)
+	if "" == txn.finalName {
 		txn.ignore = true
 	}
 }
 
 func (txn *txn) getsApdex() bool {
-	return txn.IsWeb
+	return txn.isWeb
 }
 
 func (txn *txn) txnTraceThreshold() time.Duration {
 	if txn.Config.TransactionTracer.Threshold.IsApdexFailing {
-		return internal.ApdexFailingThreshold(txn.ApdexThreshold)
+		return internal.ApdexFailingThreshold(txn.apdexThreshold)
 	}
 	return txn.Config.TransactionTracer.Threshold.Duration
 }
 
 func (txn *txn) shouldSaveTrace() bool {
 	return txn.txnTracesEnabled() &&
-		(txn.Duration >= txn.txnTraceThreshold())
+		(txn.duration >= txn.txnTraceThreshold())
+}
+
+func (txn *txn) hasErrors() bool {
+	return len(txn.errors) > 0
 }
 
 func (txn *txn) MergeIntoHarvest(h *internal.Harvest) {
-	internal.CreateTxnMetrics(&txn.TxnData, h.Metrics)
-	internal.MergeBreakdownMetrics(&txn.TxnData, h.Metrics)
-
-	if txn.txnEventsEnabled() {
-		// Allocate a new TxnEvent to prevent a reference to the large transaction.
-		alloc := new(internal.TxnEvent)
-		*alloc = txn.TxnData.TxnEvent
-		h.TxnEvents.AddTxnEvent(alloc)
+	exclusive := time.Duration(0)
+	children := internal.TracerRootChildren(&txn.tracer)
+	if txn.duration > children {
+		exclusive = txn.duration - children
 	}
 
-	internal.MergeTxnErrors(&h.ErrorTraces, txn.Errors, txn.TxnEvent)
+	internal.CreateTxnMetrics(internal.CreateTxnMetricsArgs{
+		IsWeb:          txn.isWeb,
+		Duration:       txn.duration,
+		Exclusive:      exclusive,
+		Name:           txn.finalName,
+		Zone:           txn.zone,
+		ApdexThreshold: txn.apdexThreshold,
+		HasErrors:      txn.hasErrors(),
+		Queueing:       txn.queuing,
+	}, h.Metrics)
+
+	internal.MergeBreakdownMetrics(&txn.tracer, h.Metrics, txn.finalName, txn.isWeb)
+
+	if txn.txnEventsEnabled() {
+		h.TxnEvents.AddTxnEvent(&internal.TxnEvent{
+			Name:      txn.finalName,
+			Timestamp: txn.start,
+			Duration:  txn.duration,
+			Queuing:   txn.queuing,
+			Zone:      txn.zone,
+			Attrs:     txn.attrs,
+			DatastoreExternalTotals: txn.tracer.DatastoreExternalTotals,
+		})
+	}
+
+	requestURI := ""
+	if nil != txn.Request && nil != txn.Request.URL {
+		requestURI = internal.SafeURL(txn.Request.URL)
+	}
+
+	internal.MergeTxnErrors(h.ErrorTraces, txn.errors, txn.finalName, requestURI, txn.attrs)
 
 	if txn.errorEventsEnabled() {
-		for _, e := range txn.Errors {
-			errEvent := &internal.ErrorEvent{
-				ErrorData: *e,
-				TxnEvent:  txn.TxnEvent,
-			}
-			// Since the stack trace is not used in error events, remove the reference
-			// to minimize memory.
-			errEvent.Stack = nil
-			h.ErrorEvents.Add(errEvent)
+		for _, e := range txn.errors {
+			h.ErrorEvents.Add(&internal.ErrorEvent{
+				Klass:    e.Klass,
+				Msg:      e.Msg,
+				When:     e.When,
+				TxnName:  txn.finalName,
+				Duration: txn.duration,
+				Queuing:  txn.queuing,
+				Attrs:    txn.attrs,
+				DatastoreExternalTotals: txn.tracer.DatastoreExternalTotals,
+			})
 		}
 	}
 
 	if txn.shouldSaveTrace() {
 		h.TxnTraces.Witness(internal.HarvestTrace{
-			TxnEvent: txn.TxnEvent,
-			Trace:    txn.TxnTrace,
+			Start:                txn.start,
+			Duration:             txn.duration,
+			MetricName:           txn.finalName,
+			CleanURL:             requestURI,
+			Trace:                txn.tracer.TxnTrace,
+			ForcePersist:         false,
+			GUID:                 "",
+			SyntheticsResourceID: "",
+			Attrs:                txn.attrs,
 		})
 	}
 
-	if nil != txn.SlowQueries {
-		h.SlowSQLs.Merge(txn.SlowQueries, txn.FinalName, txn.CleanURL)
+	if nil != txn.tracer.SlowQueries {
+		h.SlowSQLs.Merge(txn.tracer.SlowQueries, txn.finalName, requestURI)
 	}
 }
 
@@ -169,8 +218,8 @@ func headersJustWritten(txn *txn, code int) {
 	}
 	txn.wroteHeader = true
 
-	internal.ResponseHeaderAttributes(txn.Attrs, txn.W.Header())
-	internal.ResponseCodeAttribute(txn.Attrs, code)
+	internal.ResponseHeaderAttributes(txn.attrs, txn.W.Header())
+	internal.ResponseCodeAttribute(txn.attrs, code)
 
 	if responseCodeIsError(&txn.Config, code) {
 		e := internal.TxnErrorFromResponseCode(time.Now(), code)
@@ -218,32 +267,29 @@ func (txn *txn) End() error {
 		txn.noticeErrorInternal(e)
 	}
 
-	txn.Stop = time.Now()
-	txn.Duration = txn.Stop.Sub(txn.Start)
-	if children := internal.TracerRootChildren(&txn.TxnData); txn.Duration > children {
-		txn.Exclusive = txn.Duration - children
-	}
+	txn.stop = time.Now()
+	txn.duration = txn.stop.Sub(txn.start)
 
 	txn.freezeName()
 
 	// Assign apdexThreshold regardless of whether or not the transaction
 	// gets apdex since it may be used to calculate the trace threshold.
-	txn.ApdexThreshold = internal.CalculateApdexThreshold(txn.Reply, txn.FinalName)
+	txn.apdexThreshold = internal.CalculateApdexThreshold(txn.Reply, txn.finalName)
 
 	if txn.getsApdex() {
-		if txn.HasErrors() {
-			txn.Zone = internal.ApdexFailing
+		if txn.hasErrors() {
+			txn.zone = internal.ApdexFailing
 		} else {
-			txn.Zone = internal.CalculateApdexZone(txn.ApdexThreshold, txn.Duration)
+			txn.zone = internal.CalculateApdexZone(txn.apdexThreshold, txn.duration)
 		}
 	} else {
-		txn.Zone = internal.ApdexNone
+		txn.zone = internal.ApdexNone
 	}
 
 	if txn.Config.Logger.DebugEnabled() {
 		txn.Config.Logger.Debug("transaction ended", map[string]interface{}{
-			"name":        txn.FinalName,
-			"duration_ms": txn.Duration.Seconds() * 1000.0,
+			"name":        txn.finalName,
+			"duration_ms": txn.duration.Seconds() * 1000.0,
 			"ignored":     txn.ignore,
 			"run":         txn.Reply.RunID,
 		})
@@ -270,7 +316,7 @@ func (txn *txn) AddAttribute(name string, value interface{}) error {
 		return errAlreadyEnded
 	}
 
-	return internal.AddUserAttribute(txn.Attrs, name, value, internal.DestAll)
+	return internal.AddUserAttribute(txn.attrs, name, value, internal.DestAll)
 }
 
 var (
@@ -284,7 +330,7 @@ const (
 	highSecurityErrorMsg = "message removed by high security setting"
 )
 
-func (txn *txn) noticeErrorInternal(err internal.ErrorData) error {
+func (txn *txn) noticeErrorInternal(err internal.TxnError) error {
 	if !txn.Config.ErrorCollector.Enabled {
 		return errorsLocallyDisabled
 	}
@@ -293,15 +339,15 @@ func (txn *txn) noticeErrorInternal(err internal.ErrorData) error {
 		return errorsRemotelyDisabled
 	}
 
-	if nil == txn.Errors {
-		txn.Errors = internal.NewTxnErrors(internal.MaxTxnErrors)
+	if nil == txn.errors {
+		txn.errors = internal.NewTxnErrors(internal.MaxTxnErrors)
 	}
 
 	if txn.Config.HighSecurity {
 		err.Msg = highSecurityErrorMsg
 	}
 
-	txn.Errors.Add(err)
+	txn.errors.Add(err)
 
 	return nil
 }
@@ -318,25 +364,8 @@ func (txn *txn) NoticeError(err error) error {
 		return errNilError
 	}
 
-	e := internal.ErrorData{
-		When: time.Now(),
-		Msg:  err.Error(),
-	}
-	if ec, ok := err.(ErrorClasser); ok {
-		e.Klass = ec.ErrorClass()
-	}
-	if "" == e.Klass {
-		e.Klass = reflect.TypeOf(err).String()
-	}
-	if st, ok := err.(StackTracer); ok {
-		e.Stack = st.StackTrace()
-		// Note that if the provided stack trace is excessive in length,
-		// it will be truncated during JSON creation.
-	}
-	if nil == e.Stack {
-		e.Stack = internal.GetStackTrace(2)
-	}
-
+	e := internal.TxnErrorFromError(time.Now(), err)
+	e.Stack = internal.GetStackTrace(2)
 	return txn.noticeErrorInternal(e)
 }
 
@@ -348,7 +377,7 @@ func (txn *txn) SetName(name string) error {
 		return errAlreadyEnded
 	}
 
-	txn.Name = name
+	txn.name = name
 	return nil
 }
 
@@ -367,7 +396,7 @@ func (txn *txn) StartSegmentNow() SegmentStartTime {
 	var s internal.SegmentStartTime
 	txn.Lock()
 	if !txn.finished {
-		s = internal.StartSegment(&txn.TxnData, time.Now())
+		s = internal.StartSegment(&txn.tracer, time.Now())
 	}
 	txn.Unlock()
 	return SegmentStartTime{
@@ -383,32 +412,28 @@ type segment struct {
 	txn   *txn
 }
 
-func endSegment(s Segment) error {
+func endSegment(s Segment) {
 	txn := s.StartTime.txn
 	if nil == txn {
-		return nil
+		return
 	}
-	var err error
 	txn.Lock()
-	if txn.finished {
-		err = errAlreadyEnded
-	} else {
-		err = internal.EndBasicSegment(&txn.TxnData, s.StartTime.start, time.Now(), s.Name)
+	if !txn.finished {
+		internal.EndBasicSegment(&txn.tracer, s.StartTime.start, time.Now(), s.Name)
 	}
 	txn.Unlock()
-	return err
 }
 
-func endDatastore(s DatastoreSegment) error {
+func endDatastore(s DatastoreSegment) {
 	txn := s.StartTime.txn
 	if nil == txn {
-		return nil
+		return
 	}
 	txn.Lock()
 	defer txn.Unlock()
 
 	if txn.finished {
-		return errAlreadyEnded
+		return
 	}
 	if txn.Config.HighSecurity {
 		s.QueryParameters = nil
@@ -419,12 +444,8 @@ func endDatastore(s DatastoreSegment) error {
 	if !txn.Config.DatastoreTracer.DatabaseNameReporting.Enabled {
 		s.DatabaseName = ""
 	}
-	if !txn.Config.DatastoreTracer.InstanceReporting.Enabled {
-		s.Host = ""
-		s.PortPathOrID = ""
-	}
-	return internal.EndDatastoreSegment(internal.EndDatastoreParams{
-		Tracer:             &txn.TxnData,
+	internal.EndDatastoreSegment(internal.EndDatastoreParams{
+		Tracer:             &txn.tracer,
 		Start:              s.StartTime.start,
 		Now:                time.Now(),
 		Product:            string(s.Product),
@@ -438,34 +459,31 @@ func endDatastore(s DatastoreSegment) error {
 	})
 }
 
-func externalSegmentURL(s ExternalSegment) (*url.URL, error) {
+func externalSegmentURL(s ExternalSegment) *url.URL {
 	if "" != s.URL {
-		return url.Parse(s.URL)
+		u, _ := url.Parse(s.URL)
+		return u
 	}
 	r := s.Request
 	if nil != s.Response && nil != s.Response.Request {
 		r = s.Response.Request
 	}
 	if r != nil {
-		return r.URL, nil
+		return r.URL
 	}
-	return nil, nil
+	return nil
 }
 
-func endExternal(s ExternalSegment) error {
+func endExternal(s ExternalSegment) {
 	txn := s.StartTime.txn
 	if nil == txn {
-		return nil
+		return
 	}
 	txn.Lock()
 	defer txn.Unlock()
 
 	if txn.finished {
-		return errAlreadyEnded
+		return
 	}
-	u, err := externalSegmentURL(s)
-	if nil != err {
-		return err
-	}
-	return internal.EndExternalSegment(&txn.TxnData, s.StartTime.start, time.Now(), u)
+	internal.EndExternalSegment(&txn.tracer, s.StartTime.start, time.Now(), externalSegmentURL(s))
 }

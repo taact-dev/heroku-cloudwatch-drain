@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,8 +32,6 @@ var (
 	// ErrPayloadTooLarge is created in response to receiving a 413 response
 	// code.
 	ErrPayloadTooLarge = errors.New("payload too large")
-	// ErrUnauthorized is created in response to receiving a 401 response code.
-	ErrUnauthorized = errors.New("unauthorized")
 	// ErrUnsupportedMedia is created in response to receiving a 415
 	// response code.
 	ErrUnsupportedMedia = errors.New("unsupported media")
@@ -96,7 +95,7 @@ func collectorRequestInternal(url string, data []byte, cs RpmControls) ([]byte, 
 		return nil, err
 	}
 
-	req, err := http.NewRequest("POST", url, deflated)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(deflated))
 	if nil != err {
 		return nil, err
 	}
@@ -113,26 +112,20 @@ func collectorRequestInternal(url string, data []byte, cs RpmControls) ([]byte, 
 
 	defer resp.Body.Close()
 
-	switch resp.StatusCode {
-	case 200:
-		// Nothing to do.
-	case 401:
-		return nil, ErrUnauthorized
-	case 413:
+	if 413 == resp.StatusCode {
 		return nil, ErrPayloadTooLarge
-	case 415:
+	}
+
+	if 415 == resp.StatusCode {
 		return nil, ErrUnsupportedMedia
-	default:
-		// If the response code is not 200, then the collector may not return
-		// valid JSON.
+	}
+
+	// If the response code is not 200, then the collector may not return
+	// valid JSON.
+	if 200 != resp.StatusCode {
 		return nil, unexpectedStatusCodeErr{code: resp.StatusCode}
 	}
 
-	// Read the entire response, rather than using resp.Body as input to json.NewDecoder to
-	// avoid the issue described here:
-	// https://github.com/google/go-github/pull/317
-	// https://ahmetalpbalkan.com/blog/golang-json-decoder-pitfalls/
-	// Also, collector JSON responses are expected to be quite small.
 	b, err := ioutil.ReadAll(resp.Body)
 	if nil != err {
 		return nil, err

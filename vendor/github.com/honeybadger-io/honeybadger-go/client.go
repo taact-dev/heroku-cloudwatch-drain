@@ -78,7 +78,6 @@ func (client *Client) Notify(err interface{}, extra ...interface{}) (string, err
 func (client *Client) Monitor() {
 	if err := recover(); err != nil {
 		client.Notify(newError(err, 2))
-		client.Flush()
 		panic(err)
 	}
 }

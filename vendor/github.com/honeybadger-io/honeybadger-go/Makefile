@@ -4,7 +4,6 @@ deps:
 	# dependencies
 	go get github.com/pborman/uuid
 	go get github.com/shirou/gopsutil/load
-	go get golang.org/x/sys/unix
 	# testing libs
 	go get github.com/stretchr/testify/mock
 	go get github.com/stretchr/testify/assert

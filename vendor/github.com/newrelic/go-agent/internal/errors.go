@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -26,136 +27,145 @@ func panicValueMsg(v interface{}) string {
 }
 
 // TxnErrorFromPanic creates a new TxnError from a panic.
-func TxnErrorFromPanic(now time.Time, v interface{}) ErrorData {
-	return ErrorData{
+func TxnErrorFromPanic(now time.Time, v interface{}) TxnError {
+	return TxnError{
 		When:  now,
 		Msg:   panicValueMsg(v),
 		Klass: PanicErrorKlass,
 	}
 }
 
+// TxnErrorFromError creates a new TxnError from an error.
+func TxnErrorFromError(now time.Time, err error) TxnError {
+	return TxnError{
+		When:  now,
+		Msg:   err.Error(),
+		Klass: reflect.TypeOf(err).String(),
+	}
+}
+
 // TxnErrorFromResponseCode creates a new TxnError from an http response code.
-func TxnErrorFromResponseCode(now time.Time, code int) ErrorData {
-	return ErrorData{
+func TxnErrorFromResponseCode(now time.Time, code int) TxnError {
+	return TxnError{
 		When:  now,
 		Msg:   http.StatusText(code),
 		Klass: strconv.Itoa(code),
 	}
 }
 
-// ErrorData contains the information about a recorded error.
-type ErrorData struct {
+// TxnError is an error captured in a Transaction.
+type TxnError struct {
 	When  time.Time
-	Stack StackTrace
+	Stack *StackTrace
 	Msg   string
 	Klass string
 }
 
-// TxnError combines error data with information about a transaction.  TxnError is used for
-// both error events and traced errors.
-type TxnError struct {
-	ErrorData
-	TxnEvent
-}
-
-// ErrorEvent and tracedError are separate types so that error events and traced errors can have
-// different WriteJSON methods.
-type ErrorEvent TxnError
-
-type tracedError TxnError
-
 // TxnErrors is a set of errors captured in a Transaction.
-type TxnErrors []*ErrorData
+type TxnErrors []*TxnError
 
 // NewTxnErrors returns a new empty TxnErrors.
 func NewTxnErrors(max int) TxnErrors {
-	return make([]*ErrorData, 0, max)
+	return make([]*TxnError, 0, max)
 }
 
 // Add adds a TxnError.
-func (errors *TxnErrors) Add(e ErrorData) {
+func (errors *TxnErrors) Add(e TxnError) {
 	if len(*errors) < cap(*errors) {
 		*errors = append(*errors, &e)
 	}
 }
 
-func (h *tracedError) WriteJSON(buf *bytes.Buffer) {
+func (h *harvestError) WriteJSON(buf *bytes.Buffer) {
 	buf.WriteByte('[')
 	jsonx.AppendFloat(buf, timeToFloatMilliseconds(h.When))
 	buf.WriteByte(',')
-	jsonx.AppendString(buf, h.FinalName)
+	jsonx.AppendString(buf, h.txnName)
 	buf.WriteByte(',')
 	jsonx.AppendString(buf, h.Msg)
 	buf.WriteByte(',')
 	jsonx.AppendString(buf, h.Klass)
 	buf.WriteByte(',')
-
 	buf.WriteByte('{')
-	buf.WriteString(`"agentAttributes"`)
-	buf.WriteByte(':')
-	agentAttributesJSON(h.Attrs, buf, destError)
-	buf.WriteByte(',')
-	buf.WriteString(`"userAttributes"`)
-	buf.WriteByte(':')
-	userAttributesJSON(h.Attrs, buf, destError)
-	buf.WriteByte(',')
-	buf.WriteString(`"intrinsics"`)
-	buf.WriteByte(':')
-	buf.WriteString("{}")
+	w := jsonFieldsWriter{buf: buf}
 	if nil != h.Stack {
-		buf.WriteByte(',')
-		buf.WriteString(`"stack_trace"`)
-		buf.WriteByte(':')
-		h.Stack.WriteJSON(buf)
+		w.writerField("stack_trace", h.Stack)
 	}
-	if h.CleanURL != "" {
-		buf.WriteByte(',')
-		buf.WriteString(`"request_uri"`)
-		buf.WriteByte(':')
-		jsonx.AppendString(buf, h.CleanURL)
+	w.writerField("agentAttributes", agentAttributesJSONWriter{
+		attributes: h.attrs,
+		dest:       destError,
+	})
+	w.writerField("userAttributes", userAttributesJSONWriter{
+		attributes: h.attrs,
+		dest:       destError,
+	})
+	w.rawField("intrinsics", JSONString("{}"))
+	if h.requestURI != "" {
+		w.stringField("request_uri", h.requestURI)
 	}
 	buf.WriteByte('}')
-
 	buf.WriteByte(']')
 }
 
 // MarshalJSON is used for testing.
-func (h *tracedError) MarshalJSON() ([]byte, error) {
+func (h *harvestError) MarshalJSON() ([]byte, error) {
 	buf := &bytes.Buffer{}
 	h.WriteJSON(buf)
 	return buf.Bytes(), nil
 }
 
-type harvestErrors []*tracedError
+type harvestError struct {
+	TxnError
+	txnName    string
+	requestURI string
+	attrs      *Attributes
+}
 
-func newHarvestErrors(max int) harvestErrors {
-	return make([]*tracedError, 0, max)
+type harvestErrors struct {
+	errors []*harvestError
+}
+
+func newHarvestErrors(max int) *harvestErrors {
+	return &harvestErrors{
+		errors: make([]*harvestError, 0, max),
+	}
+}
+
+func harvestErrorFromTxnError(e *TxnError, txnName string, requestURI string, attrs *Attributes) *harvestError {
+	return &harvestError{
+		TxnError:   *e,
+		txnName:    txnName,
+		requestURI: requestURI,
+		attrs:      attrs,
+	}
+}
+
+func addTxnError(errors *harvestErrors, e *TxnError, txnName string, requestURI string, attrs *Attributes) {
+	he := harvestErrorFromTxnError(e, txnName, requestURI, attrs)
+	errors.errors = append(errors.errors, he)
 }
 
 // MergeTxnErrors merges a transaction's errors into the harvest's errors.
-func MergeTxnErrors(errors *harvestErrors, errs TxnErrors, txnEvent TxnEvent) {
+func MergeTxnErrors(errors *harvestErrors, errs TxnErrors, txnName string, requestURI string, attrs *Attributes) {
 	for _, e := range errs {
-		if len(*errors) == cap(*errors) {
+		if len(errors.errors) == cap(errors.errors) {
 			return
 		}
-		*errors = append(*errors, &tracedError{
-			TxnEvent:  txnEvent,
-			ErrorData: *e,
-		})
+		addTxnError(errors, e, txnName, requestURI, attrs)
 	}
 }
 
-func (errors harvestErrors) Data(agentRunID string, harvestStart time.Time) ([]byte, error) {
-	if 0 == len(errors) {
+func (errors *harvestErrors) Data(agentRunID string, harvestStart time.Time) ([]byte, error) {
+	if 0 == len(errors.errors) {
 		return nil, nil
 	}
-	estimate := 1024 * len(errors)
+	estimate := 1024 * len(errors.errors)
 	buf := bytes.NewBuffer(make([]byte, 0, estimate))
 	buf.WriteByte('[')
 	jsonx.AppendString(buf, agentRunID)
 	buf.WriteByte(',')
 	buf.WriteByte('[')
-	for i, e := range errors {
+	for i, e := range errors.errors {
 		if i > 0 {
 			buf.WriteByte(',')
 		}
@@ -166,4 +176,4 @@ func (errors harvestErrors) Data(agentRunID string, harvestStart time.Time) ([]b
 	return buf.Bytes(), nil
 }
 
-func (errors harvestErrors) MergeIntoHarvest(h *Harvest) {}
+func (errors *harvestErrors) MergeIntoHarvest(h *Harvest) {}

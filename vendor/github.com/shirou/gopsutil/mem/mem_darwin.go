@@ -6,18 +6,18 @@ import (
 	"encoding/binary"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/shirou/gopsutil/internal/common"
-	"golang.org/x/sys/unix"
 )
 
 func getHwMemsize() (uint64, error) {
-	totalString, err := unix.Sysctl("hw.memsize")
+	totalString, err := syscall.Sysctl("hw.memsize")
 	if err != nil {
 		return 0, err
 	}
 
-	// unix.sysctl() helpfully assumes the result is a null-terminated string and
+	// syscall.sysctl() helpfully assumes the result is a null-terminated string and
 	// removes the last byte of the result if it's 0 :/
 	totalString += "\x00"
 
@@ -57,11 +57,11 @@ func SwapMemory() (*SwapMemoryStat, error) {
 		u = ((total_v - free_v) / total_v) * 100.0
 	}
 
-	// vm.swapusage shows "M", multiply 1024 * 1024 to convert bytes.
+	// vm.swapusage shows "M", multiply 1000
 	ret = &SwapMemoryStat{
-		Total:       uint64(total_v * 1024 * 1024),
-		Used:        uint64(used_v * 1024 * 1024),
-		Free:        uint64(free_v * 1024 * 1024),
+		Total:       uint64(total_v * 1000),
+		Used:        uint64(used_v * 1000),
+		Free:        uint64(free_v * 1000),
 		UsedPercent: u,
 	}
 
