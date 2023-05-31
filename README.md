@@ -1,14 +1,4 @@
-# heroku-cloudwatch-drain
-
-A Heroku HTTPS log drain that stores logs in CloudWatch Logs.
-
-[![Build Status](https://travis-ci.org/kiskolabs/heroku-cloudwatch-drain.svg?branch=master)](https://travis-ci.org/kiskolabs/heroku-cloudwatch-drain)
-
 ## Getting started
-
-### Heroku
-
-[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy)
 
 ### Locally
 
@@ -70,9 +60,7 @@ The IAM policy containing the minimum required permissions to run this is:
         "logs:PutLogEvents",
         "logs:PutRetentionPolicy"
       ],
-      "Resource": [
-        "*"
-      ]
+      "Resource": ["*"]
     }
   ]
 }

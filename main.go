@@ -17,7 +17,6 @@ import (
 	"github.com/honeybadger-io/honeybadger-go"
 	"github.com/kiskolabs/heroku-cloudwatch-drain/logger"
 	"github.com/kiskolabs/heroku-cloudwatch-drain/logparser"
-	"github.com/newrelic/go-agent"
 )
 
 // App is a Heroku HTTPS log drain. It receives log batches as POST requests,
