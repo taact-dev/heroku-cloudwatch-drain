@@ -204,23 +204,22 @@ func (app *App) processMessages(r io.Reader, l logger.Logger, txn newrelic.Trans
 			honeybadger.Notify(err)
 			return fmt.Errorf("unable to parse message: %s, error: %s", string(b), err)
 		}
-		// Retrieve the value from the environment variable
-		envValues := os.Getenv("LOG_FILTERS")
+		// Fetch the filter strings from the environment variable
+		filterStr := os.Getenv("LOG_FILTERS")
+		filters := strings.Split(filterStr, ":")
 
-		// Split the values by :
-		filters := strings.Split(envValues, ":")
-
-		// Check if any of the filters exist in the entry.Message
-		shouldLog := false
+		// Modify the condition to loop through each filter string
+		matched := false
 		for _, filter := range filters {
-			if strings.Contains(entry.Message, filter) {
-				shouldLog = true
+			pattern := fmt.Sprintf("app[%s.", filter)
+			if strings.Contains(entry.Message, pattern) {
+				matched = true
 				break
 			}
 		}
 
-		// If none of the filters exist in the entry.Message, skip the log message
-		if !shouldLog {
+		// If no filters matched, skip the log message
+		if !matched {
 			continue
 		}
 
