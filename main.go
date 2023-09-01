@@ -204,10 +204,26 @@ func (app *App) processMessages(r io.Reader, l logger.Logger, txn newrelic.Trans
 			honeybadger.Notify(err)
 			return fmt.Errorf("unable to parse message: %s, error: %s", string(b), err)
 		}
-		// Check if the log message contains any of the specified substrings.
-		if !strings.Contains(entry.Message, "high-in") && !strings.Contains(entry.Message, "critical-in") && !strings.Contains(entry.Message, "process-shipments") {
-			continue // skip the current log message
+		// Retrieve the value from the environment variable
+		envValues := os.Getenv("LOG_FILTERS")
+
+		// Split the values by :
+		filters := strings.Split(envValues, ":")
+
+		// Check if any of the filters exist in the entry.Message
+		shouldLog := false
+		for _, filter := range filters {
+			if strings.Contains(entry.Message, filter) {
+				shouldLog = true
+				break
+			}
 		}
+
+		// If none of the filters exist in the entry.Message, skip the log message
+		if !shouldLog {
+			continue
+		}
+
 		log.Println("Logging entry to CloudWatch:", entry.Message) // Add this line
 		m := entry.Message
 		if app.stripAnsiCodes {
