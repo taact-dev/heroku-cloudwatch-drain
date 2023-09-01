@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/honeybadger-io/honeybadger-go"
+	newrelic "github.com/newrelic/go-agent"
 	"github.com/taact-dev/heroku-cloudwatch-drain/logger"
 	"github.com/taact-dev/heroku-cloudwatch-drain/logparser"
 	"gopkg.in/tylerb/graceful.v1"
