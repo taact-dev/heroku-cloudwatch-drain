@@ -19,6 +19,8 @@ github.com/newrelic/go-agent v1.4.0 h1:wY5acGl5vqk/4VJ+plJRTA87Utrr3k0sWNvlN857y
 github.com/newrelic/go-agent v1.4.0/go.mod h1:a8Fv1b/fYhFSReoTU6HDkTYIMZeSVNffmoS726Y0LzQ=
 github.com/newrelic/go-agent v1.9.0 h1:DEDLnB+UsGDCcZvMZce3DdyZHL7t400+f2G8eDAZdy0=
 github.com/newrelic/go-agent v1.9.0/go.mod h1:a8Fv1b/fYhFSReoTU6HDkTYIMZeSVNffmoS726Y0LzQ=
+github.com/newrelic/go-agent v3.24.1+incompatible h1:Dvt6dtEafdrNydNsEHbtSMljWUt8pyWmcaO/wVJmuf8=
+github.com/newrelic/go-agent v3.24.1+incompatible/go.mod h1:a8Fv1b/fYhFSReoTU6HDkTYIMZeSVNffmoS726Y0LzQ=
 github.com/pborman/uuid v0.0.0-20161005151609-3d4f2ba23642 h1:J22llJ7OhnIIcOpVXVyG0DniMepToKlbCZrzcGbzwOE=
 github.com/pborman/uuid v0.0.0-20161005151609-3d4f2ba23642/go.mod h1:VyrYX9gd7irzKovcSS6BIIEwPRkP2Wm2m9ufcdFSJ34=
 github.com/pborman/uuid v0.0.0-20170612153648-e790cca94e6c h1:MUyE44mTvnI5A0xrxIxaMqoWFzPfQvtE2IWUollMDMs=

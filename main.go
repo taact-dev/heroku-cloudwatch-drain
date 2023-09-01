@@ -13,11 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"gopkg.in/tylerb/graceful.v1"
-
 	"github.com/honeybadger-io/honeybadger-go"
 	"github.com/taact-dev/heroku-cloudwatch-drain/logger"
 	"github.com/taact-dev/heroku-cloudwatch-drain/logparser"
+	"gopkg.in/tylerb/graceful.v1"
 )
 
 // App is a Heroku HTTPS log drain. It receives log batches as POST requests,

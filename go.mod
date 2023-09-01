@@ -5,7 +5,7 @@ go 1.20
 require (
 	github.com/aws/aws-sdk-go v1.12.9-0.20171010225127-0c897fc0ae57
 	github.com/honeybadger-io/honeybadger-go v0.2.1
-	github.com/newrelic/go-agent v1.9.0
+	github.com/newrelic/go-agent v3.24.1+incompatible
 	github.com/pborman/uuid v0.0.0-20170612153648-e790cca94e6c
 	github.com/satori/go.uuid v0.0.0-20151028231719-d41af8bb6a77
 	github.com/shirou/gopsutil v2.16.13-0.20171008114115-8f7dc4e5a173+incompatible
