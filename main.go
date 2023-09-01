@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -202,6 +203,10 @@ func (app *App) processMessages(r io.Reader, l logger.Logger, txn newrelic.Trans
 		if err != nil {
 			honeybadger.Notify(err)
 			return fmt.Errorf("unable to parse message: %s, error: %s", string(b), err)
+		}
+		// Check if the log message contains any of the specified substrings.
+		if !strings.Contains(entry.Message, "high-in") && !strings.Contains(entry.Message, "critical-in") && !strings.Contains(entry.Message, "process-shipments") {
+			continue // skip the current log message
 		}
 		m := entry.Message
 		if app.stripAnsiCodes {
