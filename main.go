@@ -208,6 +208,7 @@ func (app *App) processMessages(r io.Reader, l logger.Logger, txn newrelic.Trans
 		if !strings.Contains(entry.Message, "high-in") && !strings.Contains(entry.Message, "critical-in") && !strings.Contains(entry.Message, "process-shipments") {
 			continue // skip the current log message
 		}
+		log.Println("Logging entry to CloudWatch:", entry.Message) // Add this line
 		m := entry.Message
 		if app.stripAnsiCodes {
 			m = stripAnsi(m)
